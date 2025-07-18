@@ -39,9 +39,9 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 ### In-Scope (MVP)
 1. Browser UI built with Angular 19+ (standalone components)
 2. REST API (Node.js 22 LTS + NestJS)
-3. MongoDB 8.x persistence (Atlas or on-prem)
+3. PostgreSQL 16+ persistence (Supabase managed)
 4. Visual family tree (pan/zoom, collapsible branches)
-5. CRUD for **Person** records & relationships (parent, child, spouse)
+5. CRUD for **Person** records & parent-child relationships
 6. Auth via email/password (JWT) with role-based authorisation (Owner, Editor, Viewer)
 7. Basic search/autocomplete by name
 8. Export/backup to JSON
@@ -79,7 +79,7 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 | --- | --- | --- |
 | **FR-01** | System SHALL persist **Person** records in PostgreSQL with schema defined in §9.5. | Must |
 | **FR-02** | System SHALL provide REST endpoints for Create, Read, Update, Delete (CRUD) of Person. | Must |
-| **FR-03** | System SHALL support establishing & deleting **relationships** (parent, spouse) with referential integrity checks. | Must |
+| **FR-03** | System SHALL support establishing & deleting **parent-child relationships** with referential integrity checks. | Must |
 | **FR-04** | UI SHALL visualise the family tree using a scalable layout (d3-tree or ngx-graph) with smooth pan/zoom. | Must |
 | **FR-05** | UI SHALL update visualisation **optimistically** on CRUD actions and reconcile with server result. | Should |
 | **FR-06** | System SHALL provide full-text search on `firstName` + `lastName`. | Should |
@@ -120,7 +120,7 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 ### 9.3  Database (PostgreSQL)
 * Version ≥ 16.x
 * Deployment: Supabase (managed PostgreSQL) for dev/prod with built-in auth
-* Indexes: `btree(last_name, first_name)`, `btree(parent_id)`, `btree(spouse_id)`
+* Indexes: `btree(last_name, first_name)`, `btree(parent_id)`, `btree(child_id)`
 * Back-ups: Automated daily backups (7 days) + weekly (4 weeks)
 * Real-time: PostgreSQL LISTEN/NOTIFY for real-time data synchronization
 
@@ -133,9 +133,8 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 | DELETE | `/api/person/:id` | Soft-delete person |
 | POST | `/api/relationship` | Create parent-child relationship |
 | DELETE | `/api/relationship/:id` | Remove parent-child relationship |
-| POST | `/api/marriage` | Create marriage relationship |
-| PUT | `/api/marriage/:id` | Update marriage (add divorce date) |
-| DELETE | `/api/marriage/:id` | Remove marriage relationship |
+| GET | `/api/person/:id/ancestors` | Get all ancestors for a person |
+| GET | `/api/person/:id/descendants` | Get all descendants for a person |
 
 ### 9.5  Data Model (PostgreSQL Schema)
 ```sql
@@ -144,33 +143,36 @@ CREATE TABLE person (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   first_name VARCHAR(255) NOT NULL,
   last_name VARCHAR(255) NOT NULL,
+  middle_name VARCHAR(255),
+  maiden_name VARCHAR(255),
   gender VARCHAR(10) CHECK (gender IN ('male', 'female', 'other')),
   birth_date DATE,
   death_date DATE,
+  birth_place VARCHAR(255),
+  death_place VARCHAR(255),
+  notes TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL
 );
 
--- Relationship table for parent-child relationships
+-- Parent-child relationships (biological focus)
 CREATE TABLE relationship (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   parent_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
   child_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+  relationship_type VARCHAR(20) NOT NULL DEFAULT 'biological' 
+    CHECK (relationship_type IN ('biological', 'adopted', 'step', 'foster')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(parent_id, child_id)
+  UNIQUE(parent_id, child_id),
+  CHECK (parent_id != child_id)
 );
 
--- Marriage table for spouse relationships
-CREATE TABLE marriage (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  person1_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
-  person2_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
-  marriage_date DATE,
-  divorce_date DATE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  CHECK (person1_id != person2_id),
-  UNIQUE(person1_id, person2_id)
-);
+-- Indexes for performance
+CREATE INDEX idx_person_names ON person(first_name, last_name);
+CREATE INDEX idx_person_active ON person(deleted_at) WHERE deleted_at IS NULL;
+CREATE INDEX idx_relationship_parent ON relationship(parent_id);
+CREATE INDEX idx_relationship_child ON relationship(child_id);
 ```
 
 ---
