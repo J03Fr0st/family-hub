@@ -4,7 +4,7 @@
 | Item | Detail |
 | --- | --- |
 | **Version** | 0.2 (Updated) |
-| **Author** | _<your-name / product owner>_ |
+| **Author** | Joe Vreugdenburg |
 | **Date** | 12 July 2025 |
 | **Reviewed By** | — |
 | **Status** | Draft |
@@ -77,7 +77,7 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 ## 7  Functional Requirements
 | Ref ID | Requirement | Priority |
 | --- | --- | --- |
-| **FR-01** | System SHALL persist **Person** documents in MongoDB with fields defined in §8.5. | Must |
+| **FR-01** | System SHALL persist **Person** records in PostgreSQL with schema defined in §9.5. | Must |
 | **FR-02** | System SHALL provide REST endpoints for Create, Read, Update, Delete (CRUD) of Person. | Must |
 | **FR-03** | System SHALL support establishing & deleting **relationships** (parent, spouse) with referential integrity checks. | Must |
 | **FR-04** | UI SHALL visualise the family tree using a scalable layout (d3-tree or ngx-graph) with smooth pan/zoom. | Must |
@@ -113,44 +113,64 @@ Traditional genealogy tools are either overly complex, platform-locked, or lack 
 ### 9.2  Back-End (Node)
 * **Runtime:** Node.js 22 LTS
 * **Framework:** NestJS 11+ (structured, DI-friendly)
-* **ORM:** Prisma 6+ (better TypeScript support)
+* **ORM:** Drizzle ORM (lightweight, TypeScript-first)
 * **Auth:** Lucia Auth (modern, secure)
 * **Validation:** Zod (TypeScript-first validation)
 
-### 9.3  Database (MongoDB)
-* Version ≥ 8.x
-* Deployment: MongoDB Atlas Shared Tier (M0) for dev; Dedicated cluster for prod
-* Indexes: `{ lastName: 1, firstName: 1 }`, `{ relationships.children: 1 }`
-* Back-ups: Automated daily snapshots (7 days) + weekly (4 weeks)
-* Change Streams: Real-time data synchronization support
+### 9.3  Database (PostgreSQL)
+* Version ≥ 16.x
+* Deployment: Supabase (managed PostgreSQL) for dev/prod with built-in auth
+* Indexes: `btree(last_name, first_name)`, `btree(parent_id)`, `btree(spouse_id)`
+* Back-ups: Automated daily backups (7 days) + weekly (4 weeks)
+* Real-time: PostgreSQL LISTEN/NOTIFY for real-time data synchronization
 
 ### 9.4  API (excerpt)
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| GET | `/api/person/:id` | Fetch person by ID |
+| GET | `/api/person/:id` | Fetch person by UUID |
 | POST | `/api/person` | Create new person |
 | PUT | `/api/person/:id` | Update person |
 | DELETE | `/api/person/:id` | Soft-delete person |
-| POST | `/api/relationship` | Link two persons (type=`parent`\|`spouse`) |
-| DELETE | `/api/relationship/:id` | Remove relationship |
+| POST | `/api/relationship` | Create parent-child relationship |
+| DELETE | `/api/relationship/:id` | Remove parent-child relationship |
+| POST | `/api/marriage` | Create marriage relationship |
+| PUT | `/api/marriage/:id` | Update marriage (add divorce date) |
+| DELETE | `/api/marriage/:id` | Remove marriage relationship |
 
-### 9.5  Data Model (Person)
-```json
-{
-  "_id": "ObjectId",
-  "firstName": "string",
-  "lastName": "string",
-  "gender": "male" | "female" | "other",
-  "birthDate": "ISO-8601 string" | null,
-  "deathDate": "ISO-8601 string" | null,
-  "relationships": {
-    "parents": ["ObjectId"],
-    "children": ["ObjectId"],
-    "spouse": "ObjectId" | null
-  },
-  "createdAt": "Date",
-  "updatedAt": "Date"
-}
+### 9.5  Data Model (PostgreSQL Schema)
+```sql
+-- Person table
+CREATE TABLE person (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  first_name VARCHAR(255) NOT NULL,
+  last_name VARCHAR(255) NOT NULL,
+  gender VARCHAR(10) CHECK (gender IN ('male', 'female', 'other')),
+  birth_date DATE,
+  death_date DATE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Relationship table for parent-child relationships
+CREATE TABLE relationship (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  parent_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+  child_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(parent_id, child_id)
+);
+
+-- Marriage table for spouse relationships
+CREATE TABLE marriage (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  person1_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+  person2_id UUID NOT NULL REFERENCES person(id) ON DELETE CASCADE,
+  marriage_date DATE,
+  divorce_date DATE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CHECK (person1_id != person2_id),
+  UNIQUE(person1_id, person2_id)
+);
 ```
 
 ---
@@ -330,7 +350,7 @@ family-hub/
 
 ## 16  Deployment & DevOps
 * **CI/CD**: GitHub Actions → Docker build → Push to GHCR
-* **Infrastructure**: Terraform 1.10+ scripts provision VPC, ECS Fargate, MongoDB Atlas
+* **Infrastructure**: Terraform 1.10+ scripts provision VPC, ECS Fargate, Supabase PostgreSQL
 * **Environments**: Dev, Staging, Prod (blue-green)
 * **Observability**: OpenTelemetry + Prometheus + Grafana dashboards
 * **Package Manager**: pnpm for faster installs and better dependency management
@@ -341,8 +361,8 @@ family-hub/
 ## 17  Assumptions & Dependencies
 | Assumption | Impact if false |
 | --- | --- |
-| MongoDB Atlas is available in chosen region | Higher latency, possible data residency issues |
-| Team familiar with Angular 17 | Additional ramp-up time |
+| Supabase PostgreSQL is available in chosen region | Higher latency, possible data residency issues |
+| Team familiar with Angular 19 and Drizzle ORM | Additional ramp-up time |
 
 ---
 
@@ -351,7 +371,7 @@ family-hub/
 | --- | --- | --- | --- |
 | Mis-handling complex relationships (e.g., adoption) | Medium | High | Comprehensive unit tests; validation rules |
 | Visualisation performance degradation | Medium | Medium | Virtualisation + subtree loading |
-| Data loss due to delete errors | Low | High | Soft-delete, daily backups |
+| Data loss due to delete errors | Low | High | Soft-delete, daily backups, PostgreSQL ACID compliance |
 
 ---
 
@@ -360,7 +380,7 @@ family-hub/
 | --- | --- | --- |
 | **0 Discovery** | 1 week | Finalised PRD, high-level UX mocks |
 | **1 Prototype** | 2 weeks | Clickable Angular prototype, dummy data |
-| **2 MVP Build** | 4 weeks | CRUD API, MongoDB, auth, visual tree |
+| **2 MVP Build** | 4 weeks | CRUD API, PostgreSQL + Drizzle, auth, visual tree |
 | **3 Beta** | 2 weeks | User feedback, perf tuning, a11y audit |
 | **4 Launch** | 1 week | Prod deploy, marketing site, docs |
 
